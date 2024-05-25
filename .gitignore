@@ -1,3 +1,4 @@
 .vscode/
 venv/
 myscript.sh
+add_all_and_commit.sh
