@@ -1,162 +1,121 @@
+import cv2
 import numpy as np
-from skimage.util import img_as_float
-from skimage import io, color
 import matplotlib.pyplot as plt
-import copy
 
-class SuperPixel:
-    def __init__(self, l=0, a=0, b=0, h=0, w=0):
-        self.update(l, a, b, h, w)
-        self.pixels = []
+def display_images(images, titles=None):
+    for i, img in enumerate(images):
+        plt.figure(figsize=(10, 10))
+        if len(img.shape) == 2:  # Grayscale image
+            plt.imshow(img, cmap='gray')
+        else:  # Color image
+            plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        if titles:
+            plt.title(titles[i])
+        plt.show()
 
-    def update(self, l, a, b, h, w):
-        self.l = l
-        self.a = a
-        self.b = b
-        self.h = h
-        self.w = w
+# Load the images
+image1 = cv2.imread('Q2/Working set/I1.jpg')
+image2 = cv2.imread('Q2/Working set/I2.jpg')
+image3 = cv2.imread('Q2/Working set/I3.jpg')
 
-def make_SuperPixel(h, w, img):
-    return SuperPixel(img[h, w][0], img[h, w][1], img[h, w][2], h, w)
+# Convert to grayscale
+gray1 = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+gray2 = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
+gray3 = cv2.cvtColor(image3, cv2.COLOR_BGR2GRAY)
 
-def show_image(img, title=''):
-    plt.figure()
-    plt.title(title)
-    plt.imshow(img, interpolation='nearest')
-    plt.axis('off')
+display_images([gray1, gray2, gray3], ['Image 1', 'Image 2', 'Image 3'])
+
+# Step 2: Detection
+sift = cv2.SIFT_create()
+keypoints1, descriptors1 = sift.detectAndCompute(gray1, None)
+keypoints2, descriptors2 = sift.detectAndCompute(gray2, None)
+keypoints3, descriptors3 = sift.detectAndCompute(gray3, None)
+
+# Draw keypoints
+img1_with_kp = cv2.drawKeypoints(image1, keypoints1, None)
+img2_with_kp = cv2.drawKeypoints(image2, keypoints2, None)
+
+display_images([img1_with_kp, img2_with_kp], ['Image 1 Keypoints', 'Image 2 Keypoints'])
+
+# Step 3: Matching
+bf = cv2.BFMatcher()
+matches = bf.knnMatch(descriptors1, descriptors2, k=2)
+
+# Apply ratio test
+good_matches = []
+for m, n in matches:
+    if m.distance < 0.75 * n.distance:
+        good_matches.append(m)
+
+# Draw matches
+match_img = cv2.drawMatches(image1, keypoints1, image2, keypoints2, good_matches[:50], None, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
+plt.figure(figsize=(15, 10))
+plt.imshow(cv2.cvtColor(match_img, cv2.COLOR_BGR2RGB))
+plt.title('Matches')
+plt.show()
+
+# Step 4: Homography
+if len(good_matches) > 10:
+    src_pts = np.float32([keypoints1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+    dst_pts = np.float32([keypoints2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+
+    H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+    matches_mask = mask.ravel().tolist()
+
+    h, w = gray1.shape
+    pts = np.float32([[0, 0], [0, h-1], [w-1, h-1], [w-1, 0]]).reshape(-1, 1, 2)
+    dst = cv2.perspectiveTransform(pts, H)
+
+    img2 = cv2.polylines(image2, [np.int32(dst)], True, 255, 3, cv2.LINE_AA)
+
+    plt.figure(figsize=(15, 10))
+    plt.imshow(cv2.cvtColor(img2, cv2.COLOR_BGR2RGB))
+    plt.title('Homography')
     plt.show()
+else:
+    print("Not enough matches found")
 
-def display_clusters(img, clusters, title):
-    image = np.copy(img)
-    for c in clusters:
-        for p in c.pixels:
-            image[p[0], p[1]][0] = c.l
-            image[p[0], p[1]][1] = c.a
-            image[p[0], p[1]][2] = c.b
-        image[c.h, c.w][0] = 0
-        image[c.h, c.w][1] = 0
-        image[c.h, c.w][2] = 0
-    rgb_arr = color.lab2rgb(image)
-    show_image(rgb_arr, title)
+# Step 5: Mapping
+result = cv2.warpPerspective(image1, H, (image1.shape[1] + image2.shape[1], image1.shape[0]))
+result[0:image2.shape[0], 0:image2.shape[1]] = image2
 
-def initialize_cluster_centers(S, image, img_h, img_w, clusters):
-    for h in range(int(S/2), img_h, S):
-        for w in range(int(S/2), img_w, S):
-            clusters.append(make_SuperPixel(h, w, image))
-    return clusters
+plt.figure(figsize=(15, 10))
+plt.imshow(cv2.cvtColor(result, cv2.COLOR_BGR2RGB))
+plt.title('Warped Image')
+plt.show()
 
-def get_gradient(h, w, image):
-    if w + 1 >= image.shape[1]:
-        w = image.shape[1] - 2
-    if h + 1 >= image.shape[0]:
-        h = image.shape[0] - 2
-    gradientx = np.sqrt((image[h][w+1][0] - image[h][w-1][0])**2 + (image[h][w+1][1] - image[h][w-1][1])**2 + (image[h][w+1][2] - image[h][w-1][2])**2)
-    gradienty = np.sqrt((image[h+1][w][0] - image[h-1][w][0])**2 + (image[h+1][w][1] - image[h-1][w][1])**2 + (image[h+1][w][2] - image[h-1][w][2])**2)
-    gradient = gradientx + gradienty
-    return gradient
+# Step 6: Merging I
+def create_panorama(img1, img2, H):
+    result = cv2.warpPerspective(img1, H, (img1.shape[1] + img2.shape[1], img1.shape[0]))
+    result[0:img2.shape[0], 0:img2.shape[1]] = img2
+    return result
 
-def relocate_cluster_center_at_lowgrad(clusters, image):
-    for c in clusters:
-        gradient = get_gradient(c.h, c.w, image)
-        for h in range(-1, 2):
-            for w in range(-1, 2):
-                x = c.h + h
-                y = c.w + w
-                new_gradient = get_gradient(x, y, image)
-                if new_gradient < gradient:
-                    c.update(image[x][y][0], image[x][y][1], image[x][y][2], x, y)
-                    gradient = new_gradient
-    return None
+panorama = create_panorama(image1, image2, H)
+plt.figure(figsize=(15, 10))
+plt.imshow(cv2.cvtColor(panorama, cv2.COLOR_BGR2RGB))
+plt.title('Panorama')
+plt.show()
 
-def assign_cluster(clusters, S, image, img_h, img_w, cluster_tag, dis, M, return_distances=False):
-    distances = np.zeros((img_h, img_w))
-    for c in clusters:
-        for h in range(c.h - 2 * S, c.h + 2 * S):
-            if h < 0 or h >= img_h:
-                continue
-            for w in range(c.w - 2 * S, c.w + 2 * S):
-                if w < 0 or w >= img_w:
-                    continue
-                l, a, b = image[h, w]
-                Dc = np.sqrt((l - c.l)**2 + (a - c.a)**2 + (b - c.b)**2)
-                Ds = np.sqrt((h - c.h)**2 + (w - c.w)**2)
-                D = np.sqrt((Dc / M)**2 + (Ds / S)**2)
-                if D < dis[h, w]:
-                    if (h, w) not in cluster_tag:
-                        cluster_tag[(h, w)] = c
-                        c.pixels.append((h, w))
-                    else:
-                        cluster_tag[(h, w)].pixels.remove((h, w))
-                        cluster_tag[(h, w)] = c
-                        c.pixels.append((h, w))
-                    dis[h, w] = D
-                if return_distances:
-                    distances[h, w] = D
-    return distances if return_distances else None
+# Step 8: Generalizing I (Add the third image)
+keypoints1_3, descriptors1_3 = sift.detectAndCompute(result, None)
+matches3 = bf.knnMatch(descriptors1_3, descriptors3, k=2)
 
-def update_clusters(clusters, image):
-    for c in clusters:
-        sum_h, sum_w = 0, 0
-        for pixel in c.pixels:
-            sum_h += pixel[0]
-            sum_w += pixel[1]
-        mean_h = sum_h // len(c.pixels)
-        mean_w = sum_w // len(c.pixels)
-        c.update(image[mean_h, mean_w][0], image[mean_h, mean_w][1], image[mean_h, mean_w][2], mean_h, mean_w)
-    return None
+good_matches3 = []
+for m, n in matches3:
+    if m.distance < 0.75 * n.distance:
+        good_matches3.append(m)
 
-def compute_res_error(old_clusters, new_clusters):
-    error = 0.0
-    for new_c, old_c in zip(new_clusters, old_clusters):
-        error_lab = np.abs(new_c.l - old_c.l) + np.abs(new_c.a - old_c.a) + np.abs(new_c.b - old_c.b)
-        error_hw = np.abs(new_c.h - old_c.h) + np.abs(new_c.w - old_c.w)
-        error += error_lab + error_hw
-    return error
+if len(good_matches3) > 10:
+    src_pts3 = np.float32([keypoints1_3[m.queryIdx].pt for m in good_matches3]).reshape(-1, 1, 2)
+    dst_pts3 = np.float32([keypoints3[m.trainIdx].pt for m in good_matches3]).reshape(-1, 1, 2)
 
-def display_heatmap(data, title=''):
-    plt.figure()
-    plt.title(title)
-    plt.imshow(data, cmap='hot', interpolation='nearest')
-    plt.colorbar()
-    plt.axis('off')
+    H3, mask3 = cv2.findHomography(src_pts3, dst_pts3, cv2.RANSAC, 5.0)
+    matches_mask3 = mask3.ravel().tolist()
+
+    panorama3 = create_panorama(result, image3, H3)
+    plt.figure(figsize=(15, 10))
+    plt.imshow(cv2.cvtColor(panorama3, cv2.COLOR_BGR2RGB))
+    plt.title('Panorama with Three Images')
     plt.show()
-
-def superpixel_segmentation(image_path, S, M, weight_combinations, num_iterations=10, error_threshold=0.1):
-    img = img_as_float(io.imread(image_path))
-    img_lab = color.rgb2lab(img)
-    img_h, img_w = img_lab.shape[:2]
-
-    for i, (S_weight, M_weight) in enumerate(weight_combinations):
-        clusters = []
-        clusters = initialize_cluster_centers(S, img_lab, img_h, img_w, clusters)
-        relocate_cluster_center_at_lowgrad(clusters, img_lab)
-
-        dis = np.full((img_h, img_w), np.inf)
-        cluster_tag = {}
-
-        # Initial distances
-        initial_distances = assign_cluster(clusters, S * S_weight, img_lab, img_h, img_w, cluster_tag, dis, M * M_weight, return_distances=True)
-        display_heatmap(initial_distances, f'Initial Distances: S_weight={S_weight}, M_weight={M_weight}')
-
-        for iteration in range(num_iterations):
-            old_clusters = copy.deepcopy(clusters)
-            assign_cluster(clusters, S * S_weight, img_lab, img_h, img_w, cluster_tag, dis, M * M_weight)
-            update_clusters(clusters, img_lab)
-            error = compute_res_error(old_clusters, clusters)
-            if error < error_threshold:
-                break
-
-        display_clusters(img_lab, clusters, f'Weight Combination {i+1}: S_weight={S_weight}, M_weight={M_weight}')
-
-        # Final distances
-        final_distances = assign_cluster(clusters, S * S_weight, img_lab, img_h, img_w, cluster_tag, dis, M * M_weight, return_distances=True)
-        display_heatmap(final_distances, f'Final Distances: S_weight={S_weight}, M_weight={M_weight}')
-
-# Example usage
-image_path = '/home/ameer/Computer-Vesion/HW2/Q1/castle.jpg'  # Replace with your image path
-S = 10  # Example value for S
-M = 10  # Example value for M
-# Define different weights for the color values and the spatial coordinates
-weight_combinations = [(1, 1), (1, 0.5), (0.5, 1)]
-
-superpixel_segmentation(image_path, S, M, weight_combinations)
+else:
+    print("Not enough matches found for the third image")
