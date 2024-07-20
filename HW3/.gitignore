@@ -1,2 +1,5 @@
 Q4/*
-myenv
+.venv/
+yolov5/
+task_traffic_sign_annotations_2024_07_20_19_46_51_yolo 1.1/
+*.yaml

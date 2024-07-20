@@ -1,0 +1,7 @@
+path: /home/ameer/Computer-Vesion/HW3/data1
+train: images/train # train images (relative to 'path') 
+val: images/train # train images (relative to 'path')
+
+#classes 
+names:
+  0: traffic_sign
